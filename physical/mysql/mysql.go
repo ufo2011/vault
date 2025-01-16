@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package mysql
 
 import (
@@ -17,11 +20,10 @@ import (
 	"time"
 	"unicode"
 
-	log "github.com/hashicorp/go-hclog"
-	"github.com/hashicorp/go-multierror"
-
 	metrics "github.com/armon/go-metrics"
 	mysql "github.com/go-sql-driver/mysql"
+	log "github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/go-secure-stdlib/strutil"
 	"github.com/hashicorp/vault/sdk/physical"
 )
@@ -120,7 +122,7 @@ func NewMySQLBackend(conf map[string]string, logger log.Logger) (physical.Backen
 	// Create the required table if it doesn't exists.
 	if !tableExist {
 		create_query := "CREATE TABLE IF NOT EXISTS " + dbTable +
-			" (vault_key varbinary(512), vault_value mediumblob, PRIMARY KEY (vault_key))"
+			" (vault_key varbinary(3072), vault_value mediumblob, PRIMARY KEY (vault_key))"
 		if _, err := db.Exec(create_query); err != nil {
 			return nil, fmt.Errorf("failed to create mysql table: %w", err)
 		}

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package gcs
 
 import (
@@ -5,20 +8,19 @@ import (
 	"crypto/md5"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"cloud.google.com/go/storage"
 	metrics "github.com/armon/go-metrics"
 	log "github.com/hashicorp/go-hclog"
 	multierror "github.com/hashicorp/go-multierror"
-	"github.com/hashicorp/vault/sdk/helper/useragent"
+	"github.com/hashicorp/vault/helper/useragent"
 	"github.com/hashicorp/vault/sdk/physical"
-
-	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 )
@@ -228,7 +230,7 @@ func (b *Backend) Get(ctx context.Context, key string) (retEntry *physical.Entry
 		}
 	}()
 
-	value, err := ioutil.ReadAll(r)
+	value, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read value into a string: %w", err)
 	}
