@@ -1,18 +1,23 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { module, test } from 'qunit';
 import { setupRenderingTest } from 'ember-qunit';
 import { render, settled } from '@ember/test-helpers';
 import { hbs } from 'ember-cli-htmlbars';
 
-module('Integration | Component | StatText', function(hooks) {
+module('Integration | Component | StatText', function (hooks) {
   setupRenderingTest(hooks);
 
-  test('it renders', async function(assert) {
+  test('it renders', async function (assert) {
     await render(hbs`<StatText />`);
 
-    assert.dom('[data-test-stat-text-container]').exists('renders element');
+    assert.dom('[data-test-stat-text]').exists('renders element');
   });
 
-  test('it renders passed in attributes', async function(assert) {
+  test('it renders passed in attributes', async function (assert) {
     this.set('label', 'A Label');
     this.set('value', 'A value');
     this.set('size', 'l');
@@ -28,7 +33,7 @@ module('Integration | Component | StatText', function(hooks) {
     this.set('value', 604099);
     await settled();
 
-    let formattedNumber = '604,099';
+    const formattedNumber = '604,099';
     assert.dom('.stat-value').hasText(formattedNumber, 'renders correctly formatted integer value');
   });
 });
