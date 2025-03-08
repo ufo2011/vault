@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { module, test } from 'qunit';
 import { setupRenderingTest } from 'ember-qunit';
 import { render, click } from '@ember/test-helpers';
@@ -6,13 +11,13 @@ import sinon from 'sinon';
 
 const redirectBase = 'https://hashicorp.com';
 
-module('Integration | Component | oidc-consent-block', function(hooks) {
+module('Integration | Component | oidc-consent-block', function (hooks) {
   setupRenderingTest(hooks);
 
-  test('it renders', async function(assert) {
+  test('it renders', async function (assert) {
     this.set('redirect', redirectBase);
     await render(hbs`
-      <OidcConsentBlock @redirect={{redirect}} @code="1234" />
+      <OidcConsentBlock @redirect={{this.redirect}} @code="1234" />
     `);
 
     assert.dom('[data-test-consent-title]').hasText('Consent', 'Title is correct on initial render');
@@ -26,13 +31,13 @@ module('Integration | Component | oidc-consent-block', function(hooks) {
     assert.dom('[data-test-cancel-button]').hasText('No', 'form button has correct cancel text');
   });
 
-  test('it calls the success callback when user clicks "Yes"', async function(assert) {
+  test('it calls the success callback when user clicks "Yes"', async function (assert) {
     const spy = sinon.spy();
     this.set('successSpy', spy);
     this.set('redirect', redirectBase);
 
     await render(hbs`
-      <OidcConsentBlock @redirect={{redirect}} @code="1234" @testRedirect={{successSpy}} @foo="make sure this doesn't get passed" />
+      <OidcConsentBlock @redirect={{this.redirect}} @code="1234" @testRedirect={{this.successSpy}} @foo="make sure this doesn't get passed" />
     `);
 
     assert.dom('[data-test-consent-title]').hasText('Consent', 'Title is correct on initial render');
@@ -47,13 +52,13 @@ module('Integration | Component | oidc-consent-block', function(hooks) {
     assert.ok(spy.calledWith(`${redirectBase}/?code=1234`), 'Redirects to correct route');
   });
 
-  test('it shows the termination message when user clicks "No"', async function(assert) {
+  test('it shows the termination message when user clicks "No"', async function (assert) {
     const spy = sinon.spy();
     this.set('successSpy', spy);
     this.set('redirect', redirectBase);
 
     await render(hbs`
-      <OidcConsentBlock @redirect={{redirectBase}} @code="1234" @testRedirect={{successSpy}} />
+      <OidcConsentBlock @redirect={{this.redirectBase}} @code="1234" @testRedirect={{this.successSpy}} />
     `);
 
     assert.dom('[data-test-consent-title]').hasText('Consent', 'Title is correct on initial render');
@@ -71,7 +76,7 @@ module('Integration | Component | oidc-consent-block', function(hooks) {
     assert.ok(spy.notCalled, 'Does not call the success method');
   });
 
-  test('it calls the success callback with correct params', async function(assert) {
+  test('it calls the success callback with correct params', async function (assert) {
     const spy = sinon.spy();
     this.set('successSpy', spy);
     this.set('redirect', redirectBase);
@@ -79,11 +84,11 @@ module('Integration | Component | oidc-consent-block', function(hooks) {
 
     await render(hbs`
       <OidcConsentBlock
-        @redirect={{redirect}}
-        @code={{code}}
+        @redirect={{this.redirect}}
+        @code={{this.code}}
         @state="foo"
         @foo="make sure this doesn't get passed"
-        @testRedirect={{successSpy}}
+        @testRedirect={{this.successSpy}}
       />
     `);
 

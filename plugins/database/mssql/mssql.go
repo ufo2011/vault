@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package mssql
 
 import (
@@ -5,13 +8,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	_ "github.com/denisenkom/go-mssqldb"
-	multierror "github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/go-secure-stdlib/parseutil"
 	"github.com/hashicorp/go-secure-stdlib/strutil"
-	dbplugin "github.com/hashicorp/vault/sdk/database/dbplugin/v5"
+	"github.com/hashicorp/vault/sdk/database/dbplugin/v5"
 	"github.com/hashicorp/vault/sdk/database/helper/connutil"
 	"github.com/hashicorp/vault/sdk/database/helper/dbutil"
 	"github.com/hashicorp/vault/sdk/helper/dbtxn"
@@ -98,19 +101,13 @@ func (m *MSSQL) Initialize(ctx context.Context, req dbplugin.InitializeRequest) 
 		return dbplugin.InitializeResponse{}, fmt.Errorf("invalid username template - did you reference a field that isn't available? : %w", err)
 	}
 
-	containedDB := false
-	containedDBRaw, err := strutil.GetString(req.Config, "contained_db")
-	if err != nil {
-		return dbplugin.InitializeResponse{}, fmt.Errorf("failed to retrieve contained_db: %w", err)
-	}
-	if containedDBRaw != "" {
-		containedDB, err = strconv.ParseBool(containedDBRaw)
+	if v, ok := req.Config["contained_db"]; ok {
+		containedDB, err := parseutil.ParseBool(v)
 		if err != nil {
-			return dbplugin.InitializeResponse{}, fmt.Errorf("parsing error: incorrect boolean operator provided for contained_db: %w", err)
+			return dbplugin.InitializeResponse{}, fmt.Errorf(`invalid value for "contained_db": %w`, err)
 		}
+		m.containedDB = containedDB
 	}
-
-	m.containedDB = containedDB
 
 	resp := dbplugin.InitializeResponse{
 		Config: newConf,
@@ -159,7 +156,7 @@ func (m *MSSQL) NewUser(ctx context.Context, req dbplugin.NewUserRequest) (dbplu
 				"expiration": expirationStr,
 			}
 
-			if err := dbtxn.ExecuteTxQuery(ctx, tx, m, query); err != nil {
+			if err := dbtxn.ExecuteTxQueryDirect(ctx, tx, m, query); err != nil {
 				return dbplugin.NewUserResponse{}, err
 			}
 		}
@@ -203,7 +200,7 @@ func (m *MSSQL) DeleteUser(ctx context.Context, req dbplugin.DeleteUserRequest) 
 			m := map[string]string{
 				"name": req.Username,
 			}
-			if err := dbtxn.ExecuteDBQuery(ctx, db, m, query); err != nil {
+			if err := dbtxn.ExecuteDBQueryDirect(ctx, db, m, query); err != nil {
 				merr = multierror.Append(merr, err)
 			}
 		}
@@ -221,24 +218,30 @@ func (m *MSSQL) revokeUserDefault(ctx context.Context, username string) error {
 
 	// Check if DB is contained
 	if m.containedDB {
-		revokeStmt, err := db.PrepareContext(ctx, fmt.Sprintf("DROP USER IF EXISTS [%s]", username))
+		revokeQuery := `DECLARE @stmt nvarchar(max);
+			SET @stmt = 'DROP USER IF EXISTS ' + QuoteName(@username);
+			EXEC(@stmt);`
+		revokeStmt, err := db.PrepareContext(ctx, revokeQuery)
 		if err != nil {
 			return err
 		}
 		defer revokeStmt.Close()
-		if _, err := revokeStmt.ExecContext(ctx); err != nil {
+		if _, err := revokeStmt.ExecContext(ctx, sql.Named("username", username)); err != nil {
 			return err
 		}
 		return nil
 	}
 
 	// First disable server login
-	disableStmt, err := db.PrepareContext(ctx, fmt.Sprintf("ALTER LOGIN [%s] DISABLE;", username))
+	disableQuery := `DECLARE @stmt nvarchar(max);
+		SET @stmt = 'ALTER LOGIN ' + QuoteName(@username) + ' DISABLE';
+		EXEC(@stmt);`
+	disableStmt, err := db.PrepareContext(ctx, disableQuery)
 	if err != nil {
 		return err
 	}
 	defer disableStmt.Close()
-	if _, err := disableStmt.ExecContext(ctx); err != nil {
+	if _, err := disableStmt.ExecContext(ctx, sql.Named("username", username)); err != nil {
 		return err
 	}
 
@@ -282,7 +285,7 @@ func (m *MSSQL) revokeUserDefault(ctx context.Context, username string) error {
 
 	rows, err := stmt.QueryContext(ctx, username)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to query users: %w", err)
 	}
 	defer rows.Close()
 
@@ -302,7 +305,7 @@ func (m *MSSQL) revokeUserDefault(ctx context.Context, username string) error {
 	// many permissions as possible right now
 	var lastStmtError error
 	for _, query := range revokeStmts {
-		if err := dbtxn.ExecuteDBQuery(ctx, db, nil, query); err != nil {
+		if err := dbtxn.ExecuteDBQueryDirect(ctx, db, nil, query); err != nil {
 			lastStmtError = err
 		}
 	}
@@ -316,12 +319,12 @@ func (m *MSSQL) revokeUserDefault(ctx context.Context, username string) error {
 	}
 
 	// Drop this login
-	stmt, err = db.PrepareContext(ctx, fmt.Sprintf(dropLoginSQL, username, username))
+	stmt, err = db.PrepareContext(ctx, dropLoginSQL)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
-	if _, err := stmt.ExecContext(ctx); err != nil {
+	if _, err := stmt.ExecContext(ctx, sql.Named("username", username)); err != nil {
 		return err
 	}
 
@@ -342,8 +345,11 @@ func (m *MSSQL) UpdateUser(ctx context.Context, req dbplugin.UpdateUserRequest) 
 
 func (m *MSSQL) updateUserPass(ctx context.Context, username string, changePass *dbplugin.ChangePassword) error {
 	stmts := changePass.Statements.Commands
-	if len(stmts) == 0 && !m.containedDB {
+	if len(stmts) == 0 {
 		stmts = []string{alterLoginSQL}
+		if m.containedDB {
+			stmts = []string{alterUserContainedSQL}
+		}
 	}
 
 	password := changePass.NewPassword
@@ -381,6 +387,11 @@ func (m *MSSQL) updateUserPass(ctx context.Context, username string, changePass 
 		_ = tx.Rollback()
 	}()
 
+	if len(stmts) == 0 {
+		// should not happen, but guard against it anyway
+		return errors.New("no statement provided")
+	}
+
 	for _, stmt := range stmts {
 		for _, query := range strutil.ParseArbitraryStringSlice(stmt, ";") {
 			query = strings.TrimSpace(query)
@@ -393,7 +404,7 @@ func (m *MSSQL) updateUserPass(ctx context.Context, username string, changePass 
 				"username": username,
 				"password": password,
 			}
-			if err := dbtxn.ExecuteTxQuery(ctx, tx, m, query); err != nil {
+			if err := dbtxn.ExecuteTxQueryDirect(ctx, tx, m, query); err != nil {
 				return fmt.Errorf("failed to execute query: %w", err)
 			}
 		}
@@ -418,15 +429,17 @@ END
 `
 
 const dropLoginSQL = `
-IF EXISTS
-  (SELECT name
-   FROM master.sys.server_principals
-   WHERE name = N'%s')
-BEGIN
-  DROP LOGIN [%s]
-END
-`
+DECLARE @stmt nvarchar(max)
+SET @stmt = 'IF EXISTS (SELECT name FROM [master].[sys].[server_principals] WHERE [name] = ' + QuoteName(@username, '''') + ') ' +
+	'BEGIN ' +
+		'DROP LOGIN ' + QuoteName(@username) + ' ' +
+	'END'
+EXEC (@stmt)`
 
 const alterLoginSQL = `
-ALTER LOGIN [{{username}}] WITH PASSWORD = '{{password}}' 
+ALTER LOGIN [{{username}}] WITH PASSWORD = '{{password}}'
+`
+
+const alterUserContainedSQL = `
+ALTER USER [{{username}}] WITH PASSWORD = '{{password}}'
 `
