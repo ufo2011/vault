@@ -1,14 +1,19 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { module, test } from 'qunit';
 import { setupRenderingTest } from 'ember-qunit';
 import { setupMirage } from 'ember-cli-mirage/test-support';
-import { render, triggerEvent, click } from '@ember/test-helpers';
+import { render, triggerEvent, click, waitFor } from '@ember/test-helpers';
 import hbs from 'htmlbars-inline-precompile';
 
-module('Integration | Component | raft-storage-restore', function(hooks) {
+module('Integration | Component | raft-storage-restore', function (hooks) {
   setupRenderingTest(hooks);
   setupMirage(hooks);
 
-  test('it should restore snapshot', async function(assert) {
+  test('it should restore snapshot', async function (assert) {
     assert.expect(2);
 
     this.server.post('/sys/storage/raft/snapshot', () => {
@@ -25,6 +30,7 @@ module('Integration | Component | raft-storage-restore', function(hooks) {
       files: [new Blob(['Raft Snapshot'])],
     });
     await click('[data-test-edit-form-submit]');
+    await waitFor('#force-restore');
     await click('#force-restore');
     await click('[data-test-edit-form-submit]');
   });

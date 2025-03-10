@@ -1,9 +1,14 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package logical
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"sync/atomic"
@@ -80,6 +85,10 @@ type Response struct {
 	// Headers will contain the http headers from the plugin that it wishes to
 	// have as part of the output
 	Headers map[string][]string `json:"headers" structs:"headers" mapstructure:"headers"`
+
+	// MountType, if non-empty, provides some information about what kind
+	// of mount this secret came from.
+	MountType string `json:"mount_type" structs:"mount_type" mapstructure:"mount_type"`
 }
 
 // AddWarning adds a warning into the response's warning list
@@ -92,7 +101,8 @@ func (r *Response) AddWarning(warning string) {
 
 // IsError returns true if this response seems to indicate an error.
 func (r *Response) IsError() bool {
-	return r != nil && r.Data != nil && len(r.Data) == 1 && r.Data["error"] != nil
+	// If the response data contains only an 'error' element, or an 'error' and a 'data' element only
+	return r != nil && r.Data != nil && r.Data["error"] != nil && (len(r.Data) == 1 || (r.Data["data"] != nil && len(r.Data) == 2))
 }
 
 func (r *Response) Error() error {
@@ -129,6 +139,15 @@ func ErrorResponse(text string, vargs ...interface{}) *Response {
 			"error": text,
 		},
 	}
+}
+
+// ErrorResponseWithData is used to format an error response with additional data returned
+// within the "data" sub-field of the Data field. Useful to return additional information to the client
+// and or appear within audited responses.
+func ErrorResponseWithData(data interface{}, text string, vargs ...interface{}) *Response {
+	resp := ErrorResponse(text, vargs...)
+	resp.Data["data"] = data
+	return resp
 }
 
 // ListResponse is used to format a response to a list operation.
@@ -228,7 +247,7 @@ type WrappingResponseWriter interface {
 type StatusHeaderResponseWriter struct {
 	wrapped     http.ResponseWriter
 	wroteHeader bool
-	statusCode  int
+	StatusCode  int
 	headers     map[string][]*CustomHeader
 }
 
@@ -236,9 +255,16 @@ func NewStatusHeaderResponseWriter(w http.ResponseWriter, h map[string][]*Custom
 	return &StatusHeaderResponseWriter{
 		wrapped:     w,
 		wroteHeader: false,
-		statusCode:  200,
+		StatusCode:  200,
 		headers:     h,
 	}
+}
+
+func (w *StatusHeaderResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := w.wrapped.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("could not hijack because wrapped connection is %T and it does not implement http.Hijacker", w.wrapped)
 }
 
 func (w *StatusHeaderResponseWriter) Wrapped() http.ResponseWriter {
@@ -259,7 +285,7 @@ func (w *StatusHeaderResponseWriter) Write(buf []byte) (int, error) {
 	// statusHeaderResponseWriter struct are called the internal call to the
 	// WriterHeader invoked from inside Write method won't change the headers.
 	if !w.wroteHeader {
-		w.setCustomResponseHeaders(w.statusCode)
+		w.setCustomResponseHeaders(w.StatusCode)
 	}
 
 	return w.wrapped.Write(buf)
@@ -268,7 +294,7 @@ func (w *StatusHeaderResponseWriter) Write(buf []byte) (int, error) {
 func (w *StatusHeaderResponseWriter) WriteHeader(statusCode int) {
 	w.setCustomResponseHeaders(statusCode)
 	w.wrapped.WriteHeader(statusCode)
-	w.statusCode = statusCode
+	w.StatusCode = statusCode
 	// in cases where Write is called after WriteHeader, let's prevent setting
 	// ResponseWriter headers twice
 	w.wroteHeader = true
@@ -310,3 +336,12 @@ func (w *StatusHeaderResponseWriter) setCustomResponseHeaders(status int) {
 }
 
 var _ WrappingResponseWriter = &StatusHeaderResponseWriter{}
+
+// ResolveRoleResponse returns a standard response to be returned by functions handling a ResolveRoleOperation
+func ResolveRoleResponse(roleName string) (*Response, error) {
+	return &Response{
+		Data: map[string]interface{}{
+			"role": roleName,
+		},
+	}, nil
+}

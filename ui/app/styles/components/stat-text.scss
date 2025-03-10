@@ -1,6 +1,11 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 .stat-text-container {
   line-height: normal;
-  height: 100%;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
 
@@ -9,7 +14,7 @@
     .stat-label {
       font-size: $size-5;
       font-weight: $font-weight-semibold;
-      margin-bottom: $spacing-xxs;
+      margin-bottom: $spacing-4;
       line-height: inherit;
     }
     .stat-text {
@@ -17,12 +22,11 @@
       font-weight: $font-weight-normal;
       color: $ui-gray-700;
       line-height: inherit;
-      flex-grow: 1;
     }
     .stat-value {
       font-size: $size-3;
       font-weight: $font-weight-normal;
-      margin-top: $spacing-s;
+      margin-top: $spacing-12;
     }
   }
 
@@ -41,7 +45,7 @@
     .stat-value {
       font-size: $size-5;
       font-weight: $font-weight-normal;
-      margin-top: $spacing-s;
+      margin-top: $spacing-12;
     }
   }
 
@@ -60,7 +64,7 @@
     .stat-value {
       font-size: $size-3;
       font-weight: $font-weight-normal;
-      margin-top: $spacing-xxs;
+      margin-top: $spacing-4;
     }
   }
 
@@ -79,7 +83,7 @@
     .stat-value {
       font-size: $size-5;
       font-weight: $font-weight-normal;
-      margin-top: $spacing-xxs;
+      margin-top: $spacing-4;
     }
   }
 

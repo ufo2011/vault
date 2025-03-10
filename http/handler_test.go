@@ -1,30 +1,33 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package http
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
 	"net/url"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-test/deep"
 	"github.com/hashicorp/go-cleanhttp"
-	kv "github.com/hashicorp/vault-plugin-secrets-kv"
-	"github.com/hashicorp/vault/api"
-	"github.com/hashicorp/vault/audit"
-	auditFile "github.com/hashicorp/vault/builtin/audit/file"
 	"github.com/hashicorp/vault/helper/namespace"
+	"github.com/hashicorp/vault/helper/versions"
+	"github.com/hashicorp/vault/internalshared/configutil"
 	"github.com/hashicorp/vault/sdk/helper/consts"
 	"github.com/hashicorp/vault/sdk/logical"
 	"github.com/hashicorp/vault/vault"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHandler_parseMFAHandler(t *testing.T) {
@@ -112,6 +115,28 @@ func TestHandler_parseMFAHandler(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected an error; actual: %#v\n", req.MFACreds)
 	}
+}
+
+// TestHandler_CORS_Patch verifies that http PATCH is included in the list of
+// allowed request methods
+func TestHandler_CORS_Patch(t *testing.T) {
+	core, _, _ := vault.TestCoreUnsealed(t)
+	ln, addr := TestServer(t, core)
+	defer ln.Close()
+
+	corsConfig := core.CORSConfig()
+	err := corsConfig.Enable(context.Background(), []string{addr}, nil)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodOptions, addr+"/v1/sys/seal-status", nil)
+	require.NoError(t, err)
+
+	req.Header.Set("Origin", addr)
+	req.Header.Set("Access-Control-Request-Method", http.MethodPatch)
+
+	client := cleanhttp.DefaultClient()
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestHandler_cors(t *testing.T) {
@@ -294,6 +319,45 @@ func TestHandler_CacheControlNoStore(t *testing.T) {
 	}
 }
 
+func TestHandler_InFlightRequest(t *testing.T) {
+	core, _, token := vault.TestCoreUnsealed(t)
+	ln, addr := TestServer(t, core)
+	defer ln.Close()
+	TestServerAuth(t, addr, token)
+
+	req, err := http.NewRequest("GET", addr+"/v1/sys/in-flight-req", nil)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	req.Header.Set(consts.AuthHeaderName, token)
+
+	client := cleanhttp.DefaultClient()
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if resp == nil {
+		t.Fatalf("nil response")
+	}
+
+	var actual map[string]interface{}
+	testResponseStatus(t, resp, 200)
+	testResponseBody(t, resp, &actual)
+	if actual == nil || len(actual) == 0 {
+		t.Fatal("expected to get at least one in-flight request, got nil or zero length map")
+	}
+	for _, v := range actual {
+		reqInfo, ok := v.(map[string]interface{})
+		if !ok {
+			t.Fatal("failed to read in-flight request")
+		}
+		if reqInfo["request_path"] != "/v1/sys/in-flight-req" {
+			t.Fatalf("expected /v1/sys/in-flight-req in-flight request path, got %s", actual["request_path"])
+		}
+	}
+}
+
 // TestHandler_MissingToken tests the response / error code if a request comes
 // in with a missing client token. See
 // https://github.com/hashicorp/vault/issues/8377
@@ -365,6 +429,7 @@ func TestSysMounts_headerAuth(t *testing.T) {
 		"lease_duration": json.Number("0"),
 		"wrap_info":      nil,
 		"warnings":       nil,
+		"mount_type":     "system",
 		"auth":           nil,
 		"data": map[string]interface{}{
 			"secret/": map[string]interface{}{
@@ -376,9 +441,12 @@ func TestSysMounts_headerAuth(t *testing.T) {
 					"max_lease_ttl":     json.Number("0"),
 					"force_no_cache":    false,
 				},
-				"local":     false,
-				"seal_wrap": false,
-				"options":   map[string]interface{}{"version": "1"},
+				"local":                  false,
+				"seal_wrap":              false,
+				"options":                map[string]interface{}{"version": "1"},
+				"plugin_version":         "",
+				"running_sha256":         "",
+				"running_plugin_version": versions.GetBuiltinVersion(consts.PluginTypeSecrets, "kv"),
 			},
 			"sys/": map[string]interface{}{
 				"description":             "system endpoints used for control, policy and debugging",
@@ -390,9 +458,12 @@ func TestSysMounts_headerAuth(t *testing.T) {
 					"force_no_cache":              false,
 					"passthrough_request_headers": []interface{}{"Accept"},
 				},
-				"local":     false,
-				"seal_wrap": false,
-				"options":   interface{}(nil),
+				"local":                  false,
+				"seal_wrap":              true,
+				"options":                interface{}(nil),
+				"plugin_version":         "",
+				"running_sha256":         "",
+				"running_plugin_version": versions.DefaultBuiltinVersion,
 			},
 			"cubbyhole/": map[string]interface{}{
 				"description":             "per-token private secret storage",
@@ -403,9 +474,12 @@ func TestSysMounts_headerAuth(t *testing.T) {
 					"max_lease_ttl":     json.Number("0"),
 					"force_no_cache":    false,
 				},
-				"local":     true,
-				"seal_wrap": false,
-				"options":   interface{}(nil),
+				"local":                  true,
+				"seal_wrap":              false,
+				"options":                interface{}(nil),
+				"plugin_version":         "",
+				"running_sha256":         "",
+				"running_plugin_version": versions.GetBuiltinVersion(consts.PluginTypeSecrets, "cubbyhole"),
 			},
 			"identity/": map[string]interface{}{
 				"description":             "identity store",
@@ -417,9 +491,12 @@ func TestSysMounts_headerAuth(t *testing.T) {
 					"force_no_cache":              false,
 					"passthrough_request_headers": []interface{}{"Authorization"},
 				},
-				"local":     false,
-				"seal_wrap": false,
-				"options":   interface{}(nil),
+				"local":                  false,
+				"seal_wrap":              false,
+				"options":                interface{}(nil),
+				"plugin_version":         "",
+				"running_sha256":         "",
+				"running_plugin_version": versions.GetBuiltinVersion(consts.PluginTypeSecrets, "identity"),
 			},
 		},
 		"secret/": map[string]interface{}{
@@ -431,9 +508,12 @@ func TestSysMounts_headerAuth(t *testing.T) {
 				"max_lease_ttl":     json.Number("0"),
 				"force_no_cache":    false,
 			},
-			"local":     false,
-			"seal_wrap": false,
-			"options":   map[string]interface{}{"version": "1"},
+			"local":                  false,
+			"seal_wrap":              false,
+			"options":                map[string]interface{}{"version": "1"},
+			"plugin_version":         "",
+			"running_sha256":         "",
+			"running_plugin_version": versions.GetBuiltinVersion(consts.PluginTypeSecrets, "kv"),
 		},
 		"sys/": map[string]interface{}{
 			"description":             "system endpoints used for control, policy and debugging",
@@ -445,9 +525,12 @@ func TestSysMounts_headerAuth(t *testing.T) {
 				"force_no_cache":              false,
 				"passthrough_request_headers": []interface{}{"Accept"},
 			},
-			"local":     false,
-			"seal_wrap": false,
-			"options":   interface{}(nil),
+			"local":                  false,
+			"seal_wrap":              true,
+			"options":                interface{}(nil),
+			"plugin_version":         "",
+			"running_sha256":         "",
+			"running_plugin_version": versions.DefaultBuiltinVersion,
 		},
 		"cubbyhole/": map[string]interface{}{
 			"description":             "per-token private secret storage",
@@ -458,9 +541,12 @@ func TestSysMounts_headerAuth(t *testing.T) {
 				"max_lease_ttl":     json.Number("0"),
 				"force_no_cache":    false,
 			},
-			"local":     true,
-			"seal_wrap": false,
-			"options":   interface{}(nil),
+			"local":                  true,
+			"seal_wrap":              false,
+			"options":                interface{}(nil),
+			"plugin_version":         "",
+			"running_sha256":         "",
+			"running_plugin_version": versions.GetBuiltinVersion(consts.PluginTypeSecrets, "cubbyhole"),
 		},
 		"identity/": map[string]interface{}{
 			"description":             "identity store",
@@ -472,9 +558,12 @@ func TestSysMounts_headerAuth(t *testing.T) {
 				"force_no_cache":              false,
 				"passthrough_request_headers": []interface{}{"Authorization"},
 			},
-			"local":     false,
-			"seal_wrap": false,
-			"options":   interface{}(nil),
+			"local":                  false,
+			"seal_wrap":              false,
+			"options":                interface{}(nil),
+			"plugin_version":         "",
+			"running_sha256":         "",
+			"running_plugin_version": versions.GetBuiltinVersion(consts.PluginTypeSecrets, "identity"),
 		},
 	}
 	testResponseStatus(t, resp, 200)
@@ -529,8 +618,9 @@ func TestSysMounts_headerAuth_Wrapped(t *testing.T) {
 		"wrap_info": map[string]interface{}{
 			"ttl": json.Number("60"),
 		},
-		"warnings": nil,
-		"auth":     nil,
+		"warnings":   nil,
+		"auth":       nil,
+		"mount_type": "",
 	}
 
 	testResponseStatus(t, resp, 200)
@@ -742,6 +832,7 @@ func testNonPrintable(t *testing.T, disable bool) {
 	props := &vault.HandlerProperties{
 		Core:                  core,
 		DisablePrintableCheck: disable,
+		ListenerConfig:        &configutil.Listener{},
 	}
 	TestServerWithListenerAndProperties(t, ln, addr, core, props)
 	defer ln.Close()
@@ -794,7 +885,7 @@ func TestHandler_Parse_Form(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Body = ioutil.NopCloser(strings.NewReader(values.Encode()))
+	req.Body = io.NopCloser(strings.NewReader(values.Encode()))
 	req.Header.Set("x-vault-token", cluster.RootToken)
 	req.Header.Set("content-type", "application/x-www-form-urlencoded")
 	resp, err := c.Do(req)
@@ -826,190 +917,58 @@ func TestHandler_Parse_Form(t *testing.T) {
 	}
 }
 
-func TestHandler_Patch_BadContentTypeHeader(t *testing.T) {
-	coreConfig := &vault.CoreConfig{
-		LogicalBackends: map[string]logical.Factory{
-			"kv": kv.VersionedKVFactory,
+// TestHandler_MaxRequestSize verifies that a request larger than the
+// MaxRequestSize fails
+func TestHandler_MaxRequestSize(t *testing.T) {
+	t.Parallel()
+	cluster := vault.NewTestCluster(t, &vault.CoreConfig{}, &vault.TestClusterOptions{
+		DefaultHandlerProperties: vault.HandlerProperties{
+			ListenerConfig: &configutil.Listener{
+				MaxRequestSize: 1024,
+			},
 		},
-	}
-
-	cluster := vault.NewTestCluster(t, coreConfig, &vault.TestClusterOptions{
 		HandlerFunc: Handler,
+		NumCores:    1,
 	})
-
 	cluster.Start()
 	defer cluster.Cleanup()
 
-	cores := cluster.Cores
-
-	core := cores[0].Core
-	c := cluster.Cores[0].Client
-	vault.TestWaitActive(t, core)
-
-	// Mount a KVv2 backend
-	err := c.Sys().Mount("kv", &api.MountInput{
-		Type: "kv-v2",
+	client := cluster.Cores[0].Client
+	_, err := client.KVv2("secret").Put(context.Background(), "foo", map[string]interface{}{
+		"bar": strings.Repeat("a", 1025),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	kvData := map[string]interface{}{
-		"data": map[string]interface{}{
-			"bar": "a",
-		},
-	}
-
-	resp, err := c.Logical().Write("kv/data/foo", kvData)
-	if err != nil {
-		t.Fatalf("write failed - err :%#v, resp: %#v\n", err, resp)
-	}
-
-	resp, err = c.Logical().Read("kv/data/foo")
-	if err != nil {
-		t.Fatalf("read failed - err :%#v, resp: %#v\n", err, resp)
-	}
-
-	req := c.NewRequest("PATCH", "/v1/kv/data/foo")
-	req.Headers = http.Header{
-		"Content-Type": []string{"application/json"},
-	}
-
-	if err := req.SetJSONBody(kvData); err != nil {
-		t.Fatal(err)
-	}
-
-	apiResp, err := c.RawRequestWithContext(context.Background(), req)
-	if err == nil || apiResp.StatusCode != http.StatusUnsupportedMediaType {
-		t.Fatalf("expected PATCH request to fail with %d status code - err :%#v, resp: %#v\n", http.StatusUnsupportedMediaType, err, apiResp)
-	}
+	require.ErrorContains(t, err, "error parsing JSON")
 }
 
-func kvRequestWithRetry(t *testing.T, req func() (*api.Secret, error)) (*api.Secret, error) {
-	t.Helper()
-
-	var err error
-	var resp *api.Secret
-
-	// Loop until return message does not indicate upgrade, or timeout.
-	timeout := time.After(20 * time.Second)
-	ticker := time.Tick(time.Second)
-
-	for {
-		select {
-		case <-timeout:
-			t.Error("timeout expired waiting for upgrade")
-		case <-ticker:
-			resp, err = req()
-
-			if err == nil {
-				return resp, nil
-			}
-
-			responseError := err.(*api.ResponseError)
-			if !strings.Contains(responseError.Error(), "Upgrading from non-versioned to versioned data") {
-				return resp, err
-			}
-		}
-	}
-}
-
-func TestHandler_Patch_Audit(t *testing.T) {
-	coreConfig := &vault.CoreConfig{
-		LogicalBackends: map[string]logical.Factory{
-			"kv": kv.VersionedKVFactory,
-		},
-		AuditBackends: map[string]audit.Factory{
-			"file": auditFile.Factory,
-		},
-	}
-
-	cluster := vault.NewTestCluster(t, coreConfig, &vault.TestClusterOptions{
-		HandlerFunc: Handler,
-	})
-
-	cluster.Start()
-	defer cluster.Cleanup()
-
-	cores := cluster.Cores
-
-	core := cores[0].Core
-	c := cluster.Cores[0].Client
-	vault.TestWaitActive(t, core)
-
-	if err := c.Sys().Mount("kv/", &api.MountInput{
-		Type: "kv-v2",
-	}); err != nil {
-		t.Fatalf("kv-v2 mount attempt failed - err: %#v\n", err)
-	}
-
-	auditLogFile, err := ioutil.TempFile("", "httppatch")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = c.Sys().EnableAuditWithOptions("file", &api.EnableAuditOptions{
-		Type: "file",
-		Options: map[string]string{
-			"file_path": auditLogFile.Name(),
+// TestHandler_MaxRequestSize_Memory sets the max request size to 1024 bytes,
+// and creates a 1MB request. The test verifies that less than 1MB of memory is
+// allocated when the request is sent. This test shouldn't be run in parallel,
+// because it modifies GOMAXPROCS
+func TestHandler_MaxRequestSize_Memory(t *testing.T) {
+	ln, addr := TestListener(t)
+	core, _, token := vault.TestCoreUnsealed(t)
+	TestServerWithListenerAndProperties(t, ln, addr, core, &vault.HandlerProperties{
+		Core: core,
+		ListenerConfig: &configutil.Listener{
+			Address:        addr,
+			MaxRequestSize: 1024,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	defer ln.Close()
 
-	writeData := map[string]interface{}{
-		"data": map[string]interface{}{
-			"bar": "a",
-		},
-	}
+	data := bytes.Repeat([]byte{0x1}, 1024*1024)
 
-	resp, err := kvRequestWithRetry(t, func() (*api.Secret, error) {
-		return c.Logical().Write("kv/data/foo", writeData)
-	})
+	req, err := http.NewRequest("POST", addr+"/v1/sys/unseal", bytes.NewReader(data))
+	require.NoError(t, err)
+	req.Header.Set(consts.AuthHeaderName, token)
 
-	if err != nil {
-		t.Fatalf("write request failed, err: %#v, resp: %#v\n", err, resp)
-	}
-
-	patchData := map[string]interface{}{
-		"data": map[string]interface{}{
-			"baz": "b",
-		},
-	}
-
-	resp, err = kvRequestWithRetry(t, func() (*api.Secret, error) {
-		return c.Logical().JSONMergePatch(context.Background(), "kv/data/foo", patchData)
-	})
-
-	if err != nil {
-		t.Fatalf("patch request failed, err: %#v, resp: %#v\n", err, resp)
-	}
-
-	patchRequestLogCount := 0
-	patchResponseLogCount := 0
-	decoder := json.NewDecoder(auditLogFile)
-
-	var auditRecord map[string]interface{}
-	for decoder.Decode(&auditRecord) == nil {
-		auditRequest := map[string]interface{}{}
-
-		if req, ok := auditRecord["request"]; ok {
-			auditRequest = req.(map[string]interface{})
-		}
-
-		if auditRequest["operation"] == "patch" && auditRecord["type"] == "request" {
-			patchRequestLogCount += 1
-		} else if auditRequest["operation"] == "patch" && auditRecord["type"] == "response" {
-			patchResponseLogCount += 1
-		}
-	}
-
-	if patchRequestLogCount != 1 {
-		t.Fatalf("expected 1 patch request audit log record, saw %d\n", patchRequestLogCount)
-	}
-
-	if patchResponseLogCount != 1 {
-		t.Fatalf("expected 1 patch response audit log record, saw %d\n", patchResponseLogCount)
-	}
+	client := cleanhttp.DefaultClient()
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	var start, end runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&start)
+	client.Do(req)
+	runtime.ReadMemStats(&end)
+	require.Less(t, end.TotalAlloc-start.TotalAlloc, uint64(1024*1024))
 }

@@ -1,5 +1,10 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import Route from '@ember/routing/route';
-import { inject as service } from '@ember/service';
+import { service } from '@ember/service';
 import UnloadModel from 'vault/mixins/unload-model-route';
 
 export default Route.extend(UnloadModel, {
@@ -7,10 +12,10 @@ export default Route.extend(UnloadModel, {
   secretMountPath: service(),
   pathHelp: service(),
   beforeModel() {
-    return this.pathHelp.getNewModel('kmip/config', this.secretMountPath.currentPath);
+    return this.pathHelp.hydrateModel('kmip/config', this.secretMountPath.currentPath);
   },
   model() {
-    return this.store.findRecord('kmip/config', this.secretMountPath.currentPath).catch(err => {
+    return this.store.findRecord('kmip/config', this.secretMountPath.currentPath).catch((err) => {
       if (err.httpStatus === 404) {
         return;
       } else {
@@ -21,7 +26,7 @@ export default Route.extend(UnloadModel, {
 
   afterModel(model) {
     if (model) {
-      return this.store.findRecord('kmip/ca', this.secretMountPath.currentPath).then(ca => {
+      return this.store.findRecord('kmip/ca', this.secretMountPath.currentPath).then((ca) => {
         model.set('ca', ca);
         return model;
       });

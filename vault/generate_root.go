@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package vault
 
 import (
@@ -22,7 +25,7 @@ var (
 	GenerateStandardRootTokenStrategy GenerateRootStrategy = generateStandardRootToken{}
 
 	// GenerateDROperationTokenStrategy is the strategy used to generate a
-	// DR operational token
+	// DR operation token
 	GenerateDROperationTokenStrategy GenerateRootStrategy = generateStandardRootToken{}
 )
 
@@ -38,12 +41,12 @@ type GenerateRootStrategy interface {
 type generateStandardRootToken struct{}
 
 func (g generateStandardRootToken) authenticate(ctx context.Context, c *Core, combinedKey []byte) error {
-	masterKey, err := c.unsealKeyToMasterKeyPostUnseal(ctx, combinedKey)
+	rootKey, err := c.unsealKeyToRootKeyPostUnseal(ctx, combinedKey)
 	if err != nil {
 		return fmt.Errorf("unable to authenticate: %w", err)
 	}
-	if err := c.barrier.VerifyMaster(masterKey); err != nil {
-		return fmt.Errorf("master key verification failed: %w", err)
+	if err := c.barrier.VerifyRoot(rootKey); err != nil {
+		return fmt.Errorf("root key verification failed: %w", err)
 	}
 
 	return nil
@@ -64,7 +67,7 @@ func (g generateStandardRootToken) generate(ctx context.Context, c *Core) (strin
 		c.tokenStore.revokeOrphan(ctx, te.ID)
 	}
 
-	return te.ID, cleanupFunc, nil
+	return te.ExternalID, cleanupFunc, nil
 }
 
 // GenerateRootConfig holds the configuration for a root generation
@@ -134,7 +137,8 @@ func (c *Core) GenerateRootInit(otp, pgpKey string, strategy GenerateRootStrateg
 	var fingerprint string
 	switch {
 	case len(otp) > 0:
-		if len(otp) != TokenLength+2 {
+		if (len(otp) != TokenLength+TokenPrefixLength && !c.DisableSSCTokens()) ||
+			(len(otp) != TokenLength+OldTokenPrefixLength && c.DisableSSCTokens()) {
 			return fmt.Errorf("OTP string is wrong length")
 		}
 
@@ -162,7 +166,7 @@ func (c *Core) GenerateRootInit(otp, pgpKey string, strategy GenerateRootStrateg
 		return errors.New("unable to check barrier seal status")
 	}
 	if !barrierSealed && c.recoveryMode {
-		return errors.New("attempt to generate recovery operation token when already unsealed")
+		return errors.New("attempt to generate recovery token when already unsealed")
 	}
 	if c.standby && !c.recoveryMode {
 		return consts.ErrStandby
@@ -195,7 +199,7 @@ func (c *Core) GenerateRootInit(otp, pgpKey string, strategy GenerateRootStrateg
 		case generateStandardRootToken:
 			c.logger.Info("root generation initialized", "nonce", c.generateRootConfig.Nonce)
 		case *generateRecoveryToken:
-			c.logger.Info("recovery operation token generation initialized", "nonce", c.generateRootConfig.Nonce)
+			c.logger.Info("recovery token generation initialized", "nonce", c.generateRootConfig.Nonce)
 		default:
 			c.logger.Info("dr operation token generation initialized", "nonce", c.generateRootConfig.Nonce)
 		}
@@ -248,7 +252,7 @@ func (c *Core) GenerateRootUpdate(ctx context.Context, key []byte, nonce string,
 		return nil, errors.New("unable to check barrier seal status")
 	}
 	if !barrierSealed && c.recoveryMode {
-		return nil, errors.New("attempt to generate recovery operation token when already unsealed")
+		return nil, errors.New("attempt to generate recovery token when already unsealed")
 	}
 
 	if c.standby && !c.recoveryMode {
@@ -303,7 +307,7 @@ func (c *Core) GenerateRootUpdate(ctx context.Context, key []byte, nonce string,
 		combinedKey, err = shamir.Combine(c.generateRootProgress)
 		c.generateRootProgress = nil
 		if err != nil {
-			return nil, fmt.Errorf("failed to compute master key: %w", err)
+			return nil, fmt.Errorf("failed to compute root key: %w", err)
 		}
 	}
 
@@ -347,7 +351,7 @@ func (c *Core) GenerateRootUpdate(ctx context.Context, key []byte, nonce string,
 	case generateStandardRootToken:
 		c.logger.Info("root generation finished", "nonce", c.generateRootConfig.Nonce)
 	case *generateRecoveryToken:
-		c.logger.Info("recovery operation token generation finished", "nonce", c.generateRootConfig.Nonce)
+		c.logger.Info("recovery token generation finished", "nonce", c.generateRootConfig.Nonce)
 	default:
 		c.logger.Info("dr operation token generation finished", "nonce", c.generateRootConfig.Nonce)
 	}
